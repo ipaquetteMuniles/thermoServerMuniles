@@ -1,90 +1,87 @@
 """
-Municipalite des îles-de-la-madeleine
+Municipalité des îles-de-la-Madeleine
 Iohann Paquette
 2024-06-18
 """
 
-"""""""""
+"""
 Bibliothèques
-"""""""""
+"""
+import os
 from pyhtcc import PyHTCC
-"""""""""
-"""""""""
 
-def afficher_option(user=PyHTCC):
-    print(f'Connecte en tant que {user.username}...')
-    print(f'-------------------------------------')
+def afficher_option(user):
+    print(f'Connecté en tant que {user.username}...')
+    print('-------------------------------------')
     
-    choix = input('Choisir parmis les options suivante :\n'
-              '1. Affichez tout les endroits\n'
-              '2. Chercher par nom de sites\n'
-              '3. Avoir les infos des différentes zones\n'
-              '4. Se déconnecter\n'
-              '-------------------------------------\n'
-              '')
-    while 0 > int(choix) > 4: #or not choix.isdigit():
-        print('Mauvaise entrée, veuillez reessayer...')
+    choix = input('Choisir parmi les options suivantes :\n'
+                  '1. Afficher tous les endroits\n'
+                  '2. Chercher par nom de sites\n'
+                  '3. Avoir les infos des différentes zones\n'
+                  '4. Se déconnecter\n'
+                  '-------------------------------------\n')
 
-        print(f'Choisir parmis les options suivante :\n')
-        print('1.Affichez tout les endroit')
-        print('2.Chercher par nom de sites')
-        print('3.Avoir les infos des différentes zones')
-        print('4.Se déconnecter et quitter')
+    while not choix.isdigit() or not 1 <= int(choix) <= 4:
+        print('Mauvaise entrée, veuillez réessayer...')
+        choix = input('Choisir parmi les options suivantes :\n'
+                      '1. Afficher tous les endroits\n'
+                      '2. Chercher par nom de sites\n'
+                      '3. Avoir les infos des différentes zones\n'
+                      '4. Se déconnecter\n'
+                      '-------------------------------------\n')
 
-        print(f'-------------------------------------')
-        choix = int(input(''))
+    choix = int(choix)
 
-        match choix:
-            case 1:
-                get_all_zones(user)
-            case 2:
-                print(f'-------------------------------------')
-                zone_name = input('Nom du building: ')
-                user.get_zone_by_name()
-            case 3:
-                print(user.get_zones_info())
-            case 4:
-                deconnection(user)
-
-
-    return int(choix)
-
-def get_all_zones(user=PyHTCC):
-    list = user.get_all_zones()
-
-    for i in list:
-        print(i)
-
-def get_zone_by_name(user=PyHTCC,name=""):
-
-    while(name == "" or name is None):
-        name = input('Nom du building:')
+    if choix == 1:
+        get_all_zones(user)
+    elif choix == 2:
+        print('-------------------------------------')
+        zone_name = input('Nom du bâtiment : ')
+        get_zone_by_name(user, zone_name)
+    elif choix == 3:
+        print(user.get_zones_info())
+    elif choix == 4:
+        deconnection(user)
         
-    info = user.get_zone_by_name(name)
-    print(info)
+def get_all_zones(user):
+    print('Différentes localisations:')
+    print('-------------------------------------')
+    
 
-def deconnection(user=PyHTCC):
+def get_zone_by_name(user, name):
+    try:
+        while not name:
+            name = input('Nom du bâtiment : ')
+        info = user.get_zone_by_name(name)
+    except NameError as e:
+        print(e)
+
+
+
+def deconnection(user):
     try:
         user.logout()
         exit(1)
     except Exception as e:
         print(e)
-        return
 
 if __name__ == "__main__":
-    email = input('Votre courriel : ')
-    mdp = input('Mot de passe : ')
-
-    user = PyHTCC(email, mdp)
-
-    print('authentification...')
     try:   
-        user.authenticate()
+        email = input('Votre courriel : ')
+        mdp = input('Mot de passe : ')
+        
+        os.system('cls' if os.name == 'nt' else 'clear')
+        
+        print('Authentification...')
+
+        # Authentification
+        user = PyHTCC(email, mdp)
 
         choix = afficher_option(user)
 
+        while choix != 4:
+            choix = afficher_option(user)
     
     except Exception as e:
         print(e)
-        user.logout()
-    
+        exit(0)
