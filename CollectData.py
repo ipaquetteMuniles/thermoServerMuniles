@@ -7,19 +7,16 @@ Iohann Paquette
 """
 Bibliothèques
 """
-import csv
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pyhtcc import PyHTCC
 import os
 import schedule
-import importlib.util
-import subprocess
-
+import threading
 """
 Constantes
 """
-FILENAME = datetime.today().strftime("%m_%d_%Y")
+FILENAME = os.path.join('c:/Users/ipaquette/Desktop/',datetime.today().strftime("%m_%d_%Y"))
 
 """
 Classe
@@ -36,17 +33,20 @@ class Collector:
 
         self.user = user
         self.zones = user.get_all_zones()
+        self.running = True  # Flag to control the main loop
 
     def run_schedule(self):
         try:
-            while True:
+            while self.running:
                 schedule.run_pending()
                 time.sleep(1)
         except Exception as e:
+            input()
             print(e)
             print('Déconnexion...')
             self.user.logout()
             exit(1)
+
 
     def get_current_data(self, zone):
         zone.refresh_zone_info()
@@ -61,7 +61,7 @@ class Collector:
     def get_data(self, zone):
         try:
             # Configurer le fichier CSV
-            with open(f"{FILENAME}.csv", "w+") as file:
+            with open(f"{FILENAME}.csv", "w") as file:
                 file.write("zone_id,zone_name,timestamp,indoor_temperature,outdoor_temperature,displayUnits,indoor_humidity,outdoor_humidity,heat_setpoint,cool_setpoint,fan_status\n")
 
             print('-------------------------------------\n')
@@ -85,8 +85,20 @@ class Collector:
                 schedule.every(every).days.do(self.collect_data, zone)
             
             print("Écriture des données NE PAS FERMER LE PROGRAMME ...")
+            # Start a new thread for the schedule
+            try:
+                schedule_thread = threading.Thread(target=self.run_schedule)
+                schedule_thread.start()
+            except Exception as e:
+                print(e)
 
-            self.run_schedule()
+            # Wait for the user to input 'stop' to stop the program
+            while True:
+                cmd = input("Entree 'stop' pour arreter le program: ")
+                if cmd.strip().lower() == 'stop':
+                    self.running = False
+                    break
+
         except Exception as e:
             print(e)
             self.user.logout()
@@ -123,21 +135,9 @@ class Collector:
 
         return zones[choix - 1]
     
-def install_if_missing(package):
-    spec = importlib.util.find_spec(package)
-    if spec is None:
-        print(f"Installing {package}...")
-        subprocess.check_call(["pip", "install", package])
 
 if __name__ == "__main__":
-    #installation
-    libraries = ["requests", "pyhtcc", "schedule"]
-    for lib in libraries:
-        install_if_missing(lib)
     
-    print('installtions finished...')
-    os.system('cls' if os.name == 'nt' else 'clear')
-
     email = input('Votre courriel : ')
     mdp = input('Mot de passe : ')
         
