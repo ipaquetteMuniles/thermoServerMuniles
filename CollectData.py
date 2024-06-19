@@ -13,6 +13,8 @@ from datetime import datetime, timedelta
 from pyhtcc import PyHTCC
 import os
 import schedule
+import importlib.util
+import subprocess
 
 """
 Constantes
@@ -120,8 +122,22 @@ class Collector:
             choix = int(input('Affichez les infos de la zone # :'))
 
         return zones[choix - 1]
+    
+def install_if_missing(package):
+    spec = importlib.util.find_spec(package)
+    if spec is None:
+        print(f"Installing {package}...")
+        subprocess.check_call(["pip", "install", package])
 
 if __name__ == "__main__":
+    #installation
+    libraries = ["requests", "pyhtcc", "schedule"]
+    for lib in libraries:
+        install_if_missing(lib)
+    
+    print('installtions finished...')
+    os.system('cls' if os.name == 'nt' else 'clear')
+
     email = input('Votre courriel : ')
     mdp = input('Mot de passe : ')
         
