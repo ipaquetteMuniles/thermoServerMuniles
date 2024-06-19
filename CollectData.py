@@ -16,7 +16,8 @@ import threading
 """
 Constantes
 """
-FILENAME = os.path.join('c:/Users/ipaquette/Desktop/',datetime.today().strftime("%m_%d_%Y"))
+desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
+FILENAME = os.path.join(desktop_path,datetime.today().strftime("%m_%d_%Y"))
 
 """
 Classe
