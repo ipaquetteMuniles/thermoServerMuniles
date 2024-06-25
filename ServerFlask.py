@@ -133,7 +133,9 @@ def stream_events():
 @app.route('/stop', methods=['POST'])
 def stop_collecting():
     global collector
+    global user
     if collector:
+        user.logout()
         collector.running = False
         return jsonify({"status": "stopped"}), 200
     return jsonify({"error": "collector not running"}), 400
