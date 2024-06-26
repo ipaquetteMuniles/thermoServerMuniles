@@ -12,6 +12,7 @@ CORS(app)
 
 desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
 FILENAME = os.path.join(desktop_path, datetime.today().strftime("%m_%d_%Y"))
+collector = None
 
 class Collector:
     def __init__(self, user):
@@ -19,6 +20,7 @@ class Collector:
         self.zones = user.get_all_zones()
         self.running = True
         self.data_queue = []
+        self.schedule_thread = None  # Ajouter une référence au thread
 
     def run_schedule(self):
         try:
@@ -85,7 +87,7 @@ def connect():
         return jsonify({"status": "error", "message": "Failed to connect. Please check your credentials and try again."}), 401
 
 @app.route('/start', methods=['POST'])
-def start_collecting():
+def start():
     global collector
     global user
     
@@ -93,8 +95,8 @@ def start_collecting():
     choix = data.get('choix')
     frequency = data.get('frequency')
     frequency_type = data.get('frequency_type')
-
-    zone = collector.zones[choix - 1]
+    print(choix)
+    zone = collector.zones[choix]
 
     if frequency_type == "minutes":
         schedule.every(frequency).minutes.do(collector.collect_data, zone)
@@ -103,12 +105,12 @@ def start_collecting():
     elif frequency_type == "days":
         schedule.every(frequency).days.do(collector.collect_data, zone)
     
-    schedule_thread = threading.Thread(target=collector.run_schedule)
-    schedule_thread.start()
+    collector.schedule_thread = threading.Thread(target=collector.run_schedule)
+    collector.schedule_thread.start()
 
     return jsonify({"status": "started"}), 200
 
-@app.route('/logout', methods=['GET'])
+@app.route('/logout', methods=['POST'])
 def logout():
     global user
     try:
@@ -120,8 +122,8 @@ def logout():
 
 @app.route('/events', methods=['GET'])
 def stream_events():
-    global collector
     def generate():
+        global collector
         while collector.running:
             if collector.data_queue:
                 data = collector.data_queue.pop(0)
@@ -133,12 +135,14 @@ def stream_events():
 @app.route('/stop', methods=['POST'])
 def stop_collecting():
     global collector
-    global user
-    if collector:
-        user.logout()
+
+    try:
         collector.running = False
+        collector.schedule_thread.join()  # Attendre que le thread se termine proprement
+        collector.user.logout()
         return jsonify({"status": "stopped"}), 200
-    return jsonify({"error": "collector not running"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 if __name__ == "__main__":
     app.run(debug=True)
