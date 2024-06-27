@@ -6,6 +6,7 @@ from datetime import datetime
 from pyhtcc import PyHTCC
 import schedule
 from flask_cors import CORS
+from flask_sse import sse
 
 app = Flask(__name__)
 CORS(app)
@@ -21,6 +22,7 @@ class Collector:
         self.running = True
         self.data_queue = []
         self.schedule_thread = None  # Ajouter une référence au thread
+        self.lock = threading.Lock()
 
     def run_schedule(self):
         try:
@@ -50,7 +52,9 @@ class Collector:
         with open(f"{FILENAME}.csv", "a") as file:
             file.write(data)
         print(f'Data collected at {timestamp}')
-        self.data_queue.append(data)
+
+        with self.lock:
+            self.data_queue.append(data)
 
     def get_all_zones(self, user):
         
@@ -116,33 +120,43 @@ def logout():
     try:
         user.logout()
         time.sleep(1)
-        return
+        return jsonify({"status": "loggedOut"}), 200
     except Exception as e:
-        return jsonify({"status": "error", "message": e}), 401
-
+        return jsonify({"status": "error", "message": "not able to logout"}), 401
+    
 @app.route('/events', methods=['GET'])
 def stream_events():
+    global event_source
     def generate():
         global collector
         while collector.running:
-            if collector.data_queue:
-                data = collector.data_queue.pop(0)
-                yield f"data:{data}\n\n"
-            time.sleep(1)
-
-    return Response(generate(), mimetype='text/event-stream')
+            with collector.lock:
+                if collector.data_queue:
+                    data = collector.data_queue.pop(0)
+                    yield f"data:{data}\n\n"
+                    time.sleep(1)
+    try:
+        event_source = Response(generate(), mimetype='text/event-stream')
+        return event_source
+    except Exception as e:
+        print(f"Erreur lors de la création de l'EventSource: {e}")
+        if event_source:
+            event_source.close()
+        return jsonify({"status": "error", "message": "Failed to create event source."}), 500
 
 @app.route('/stop', methods=['POST'])
 def stop_collecting():
     global collector
-
+    global event_source
     try:
         collector.running = False
+        print('Arrêt des threads en cours...')
         collector.schedule_thread.join()  # Attendre que le thread se termine proprement
-        collector.user.logout()
+        if event_source:
+            event_source.close()
         return jsonify({"status": "stopped"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 400
-
+    
 if __name__ == "__main__":
     app.run(debug=True)
