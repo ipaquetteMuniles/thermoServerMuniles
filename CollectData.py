@@ -149,7 +149,7 @@ class Collector:
 
     def write_in_db(self,zone_name,device_id,data):
         try:
-            ref = db.reference(f'/{device_id}/{zone_name}/{datetime.today().strftime("%m-%d-%Y")}-THERMOSTAT_DATA')
+            ref = db.reference(f'/{device_id}/{zone_name}/{datetime.now(pytz.utc).today().strftime("%m-%d-%Y")}-THERMOSTAT_DATA')
             ref.push(data)
         except:
             print("Erreur dans l'écriture de la base de données..")
