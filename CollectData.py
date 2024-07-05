@@ -8,7 +8,7 @@ Iohann Paquette
 Bibliothèques
 """
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pyhtcc import PyHTCC
 import os
 import schedule
@@ -17,7 +17,8 @@ import firebase_admin
 from firebase_admin import credentials,db
 import json
 import pytz
-
+import requests
+import pandas as pd
 """
 Constantes
 """
@@ -30,6 +31,11 @@ cred = credentials.Certificate("./appmuniles-firebase-adminsdk-qp9zl-b94ab152f3.
 default_app = firebase_admin.initialize_app(cred, {
 	'databaseURL':DATABASE_URL
 })
+
+LONGITUDE = -61.750022
+LATITUDE = 47.445642
+TIMEZONE = 'America/Goose_Bay'
+
 """
 Classe
 """
@@ -59,6 +65,72 @@ class Collector:
             self.user.logout()
             exit(1)
 
+    def get_temperature(self):
+        # Constants
+        LONGITUDE = -61.750022
+        LATITUDE = 47.445642
+        TIMEZONE = 'America/Goose_Bay'
+        
+        # API URL and parameters
+        url = "https://api.open-meteo.com/v1/forecast"
+        params = {
+            "latitude": LATITUDE,
+            "longitude": LONGITUDE,
+            "minutely_15": "temperature_2m,relative_humidity_2m",
+            "timezone": TIMEZONE
+        }
+
+        try:
+            # Fetch the weather data
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            response = response.json()
+            
+            # Process minutely data
+            minutely_data = response.get('minutely_15', {})
+            
+            if not minutely_data:
+                raise ValueError("No minutely data found in API response.")
+            
+            minutely_times = pd.to_datetime(minutely_data.get('time', []), utc=True).tz_convert(TIMEZONE)
+            minutely_temperature_2m = minutely_data.get('temperature_2m', [])
+            minutely_humidity_2m = minutely_data.get('relative_humidity_2m', [])
+            
+            if not minutely_times.empty and len(minutely_temperature_2m) > 0 and len(minutely_humidity_2m) > 0:
+                # Get the current time and subtract 15 minutes
+                current_time = datetime.now(pytz.timezone(TIMEZONE))
+                target_time = current_time - timedelta(minutes=15)
+                
+                # Initialize variables for closest time and data
+                closest_time = None
+                closest_temperature = None
+                closest_humidity = None
+                min_difference = timedelta.max
+                
+                # Find the closest timestamp to the target time
+                for i, time in enumerate(minutely_times):
+                    time_difference = abs(time - target_time)
+                    if time_difference < min_difference:
+                        min_difference = time_difference
+                        closest_time = time
+                        closest_temperature = minutely_temperature_2m[i]
+                        closest_humidity = minutely_humidity_2m[i]
+                
+                # Print the result
+                if closest_time is not None and closest_temperature is not None and closest_humidity is not None:
+                    print(f"Closest time: {closest_time}, Temperature: {closest_temperature}, Humidity: {closest_humidity} % ")
+                    return closest_temperature, closest_humidity
+                else:
+                    print("No valid minutely data found.")
+            else:
+                print("No valid minutely data found.")
+        
+        except requests.RequestException as e:
+            print(f"Error fetching data from Open-Meteo API: {e}")
+        except ValueError as ve:
+            print(f"Error processing data: {ve}")
+        except Exception as ex:
+            print(f"An unexpected error occurred: {ex}")
 
     def get_current_data(self, zone):
         zone.refresh_zone_info()
@@ -129,16 +201,17 @@ class Collector:
 
         zone_name = zone_info['Name']
         device_id = zone.device_id
+        
+        temperature,humidity = self.get_temperature()
 
         data = {
             "device_id": device_id,
             "zone_name": zone_name,
             "timestamp": timestamp,
             "display_temperature": ui_data['DispTemperature'],
-            "outdoor_temperature": ui_data['OutdoorTemperature'],
             "display_units": ui_data['DisplayUnits'],
-            "indoor_humidity": ui_data['IndoorHumidity'],
-            "outdoor_humidity": ui_data['OutdoorHumidity'],
+            "outdoor_humidity": humidity,
+            "outdoor_temperature":temperature,
             "heat_setpoint": ui_data['HeatSetpoint'],
             "cool_setpoint": ui_data['CoolSetpoint'],
             "fan_is_running": fan_data['fanIsRunning']
