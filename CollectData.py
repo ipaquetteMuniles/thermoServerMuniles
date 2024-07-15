@@ -33,6 +33,7 @@ default_app = firebase_admin.initialize_app(cred, {
 LONGITUDE = -61.750022
 LATITUDE = 47.445642
 TIMEZONE = 'America/Goose_Bay'
+RELOG_TIME = 3600 # en seconde - 1h
 
 """
 Classe
@@ -46,26 +47,32 @@ class Collector:
     Constructeur de notre classe
     """
     def __init__(self):
-        
         self.user = None
         self.email = None
         self.mdp = None
+
         #authentification
         self.login()
 
         self.zones = self.user.get_all_zones()
         self.timeRunning = None
-        self.running = True  # Flag to control the main loop
+        self.running = True
 
     def login(self):
-        if self.email is None or self.mdp is None:
-            self.email = input('Votre courriel : ')
-            self.mdp = input('Mot de passe : ')
+        try:
+            print('Authentification...')
 
-        print('Authentification...')
-
-        # Authentification
-        self.user = PyHTCC(self.email, self.mdp)
+            if self.email is None or self.mdp is None:
+                self.email = input('Votre courriel : ')
+                self.mdp = input('Mot de passe : ')
+                # Authentification
+                self.user = PyHTCC(self.email, self.mdp)
+            else:
+                self.user.authenticate()
+        except Exception as e:
+            print(e)
+            with open("error_log.txt", "a") as file:
+                file.write(f"Error while login: {str(e)}\n")
 
     def run_schedule(self):
         try:
@@ -103,7 +110,7 @@ class Collector:
             return (current_temperature_2m,current_humidity_2m)
 
         except requests.RequestException as e:
-            with open(f"error_log.txt", "w") as file:
+            with open("error_log.txt", "a") as file:
                 file.write(f"Error fetching data from Open-Meteo API: {str(e)}\n")
             return None
 
@@ -156,8 +163,9 @@ class Collector:
             self.user.logout()
 
         except Exception as e:
-            with open(f"error_log.txt", "w") as file:
-                file.write(f"Erreur dans get_data: {str(e)}\n")
+            utcmoment_naive = datetime.now(pytz.utc)
+            with open("error_log.txt", "a") as file:
+                file.write(f"{utcmoment_naive} - Erreur dans get_data: {str(e)}\n")
             self.user.logout()
 
     def collect_data(self, zone):
@@ -165,12 +173,12 @@ class Collector:
 
             now = time.perf_counter()
             time_to_log = now - self.timeRunning
-            
-            #Time to relog after 2h (7200 s)
-            if time_to_log >= 120:#7200
+
+            #Time to relog
+            if time_to_log >= RELOG_TIME:
                 self.login()
                 self.timeRunning = time.perf_counter()
-            
+
             zone_info, ui_data, fan_data = self.get_current_data(zone)
 
             utcmoment_naive = datetime.now(pytz.utc)
@@ -202,7 +210,7 @@ class Collector:
             print(f'Data collected at {timestamp}')
 
         except Exception as e:
-            with open(f"error_log.txt", "w") as file:
+            with open("error_log.txt", "w") as file:
                 file.write(f"Erreur dans collect_data : {str(e)}\n")
             self.user.logout()
 
@@ -211,7 +219,7 @@ class Collector:
             ref = db.reference(f'/{device_id}/{zone_name}/{date}-THERMOSTAT_DATA')
             ref.push(data)
         except Exception as e:
-            with open(f"error_log.txt", "w") as file:
+            with open("error_log.txt", "a") as file:
                 file.write(f"Erreur dans l'écriture de la base de données : {str(e)}\n")
             self.user.logout()
 
@@ -239,7 +247,7 @@ class Collector:
 if __name__ == "__main__":
 
     try:
-    
+
         # Création du collecteur de données
         c = Collector()
         # Retour de la zone qu'on désire obtenir les données
@@ -248,4 +256,6 @@ if __name__ == "__main__":
         c.get_data(zone)
 
     except Exception as e:
+        with open(f"error_log.txt", "a") as file:
+            file.write(f"Erreur dans le main : {str(e)}\n")
         print(e)
