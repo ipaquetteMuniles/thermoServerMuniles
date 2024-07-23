@@ -17,8 +17,9 @@ import firebase_admin
 from firebase_admin import credentials, db
 import json
 import pytz
-import requests
 import pandas as pd
+import requests
+import ssl
 
 """
 Constantes
@@ -47,26 +48,33 @@ class Collector:
         self.user = None
         self.email = None
         self.mdp = None
+        self.session = requests.Session()
         self.timer = None
-        # Authentification
-        self.login()
 
+        self.login()
         self.zones = self.user.get_all_zones()
-        self.timeRunning = None
         self.running = True
         self.list_threads = []
 
     def login(self):
         try:
-            if self.email is None or self.mdp is None:
+            if not self.user:
                 self.email = input('Votre courriel : ')
                 self.mdp = input('Mot de passe : ')
 
-            self.user = PyHTCC(self.email, self.mdp)
-            self.user.authenticate()
+                self.user = PyHTCC(self.email, self.mdp)
+            else:
 
+                self.user.session = self.session
+                self.user.authenticate()
             print('Authentification réussie.')
             self.start_timer()
+
+        except requests.exceptions.SSLError as ssl_error:
+            print(f"SSL Error: {ssl_error}")
+            with open("error_log.txt", "a") as file:
+                file.write(f"SSL Error while login: {str(ssl_error)}\n")
+            self.retry_login()
 
         except Exception as e:
             print(e)
@@ -82,12 +90,11 @@ class Collector:
     def start_timer(self):
         if self.timer:
             self.timer.cancel()
-        self.timer = threading.Timer(RELOG_TIME - 300, self.login)  # Re-authenticate 5 minutes before expiry
+        self.timer = threading.Timer(RELOG_TIME - 300, self.login)
         self.timer.start()
 
     def run_schedule(self):
         try:
-            self.timeRunning = time.perf_counter()
             while self.running:
                 schedule.run_pending()
                 time.sleep(1)
@@ -177,12 +184,6 @@ class Collector:
 
     def collect_data(self, zone):
         try:
-            now = time.perf_counter()
-            time_to_log = now - self.timeRunning
-
-            if time_to_log >= RELOG_TIME:
-                self.login()
-                self.timeRunning = time.perf_counter()
 
             zone_info, ui_data, fan_data = self.get_current_data(zone)
 
