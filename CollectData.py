@@ -20,6 +20,8 @@ import pytz
 import pandas as pd
 import requests
 import ssl
+import sys
+import pickle
 
 """
 Constantes
@@ -37,6 +39,25 @@ LATITUDE = 47.445642
 TIMEZONE = 'America/Goose_Bay'
 RELOG_TIME = 7200  # en secondes - 2h
 
+def cookiejar_to_dict(cookiejar):
+    cookies = {}
+    for cookie in cookiejar:
+        cookies[cookie.name] = cookie.value
+    return cookies
+
+def dict_to_cookiejar(cookies):
+    cookiejar = requests.cookies.RequestsCookieJar()
+    for name, value in cookies.items():
+        cookiejar.set(name, value)
+    return cookiejar
+
+def safe_input(prompt):
+    if sys.stdin.isatty():
+        return input(prompt)
+    else:
+        print(prompt)
+        return sys.stdin.read().strip()
+
 """
 Classe
 """
@@ -45,44 +66,62 @@ class Collector:
     Constructeur de notre classe
     """
     def __init__(self):
-        self.user = None
         self.email = None
         self.mdp = None
+        self.user = None
         self.session = requests.Session()
         self.timer = None
-
-        self.login()
-        self.zones = self.user.get_all_zones()
         self.running = True
         self.list_threads = []
 
+        self.load_cookies()
+        self.login()
+
+    def save_cookies(self):
+        with open("session_cookies.pkl", "wb") as file:
+            cookies_dict = cookiejar_to_dict(self.session.cookies)
+            pickle.dump(cookies_dict, file)
+
+    def load_cookies(self):
+        if os.path.exists("session_cookies.pkl") and os.path.getsize("session_cookies.pkl") > 0:
+            try:
+                with open("session_cookies.pkl", "rb") as file:
+                    cookies_dict = pickle.load(file)
+                    self.session.cookies = dict_to_cookiejar(cookies_dict)
+            except EOFError:
+                print("Le fichier de cookies est vide ou corrompu. Procédure sans chargement des cookies.")
+        else:
+            print("Le fichier de cookies est vide. Procédure sans chargement des cookies.")
+
     def login(self):
         try:
-            if not self.user:
-                self.email = input('Votre courriel : ')
-                self.mdp = input('Mot de passe : ')
-
+            if self.user is None:
+                self.email = safe_input('Votre courriel : ')
+                self.mdp = safe_input('Mot de passe : ')
                 self.user = PyHTCC(self.email, self.mdp)
-            else:
 
-                self.user.session = self.session
-                self.user.authenticate()
+            if self.user.session.cookies:
+                self.session.cookies = self.user.session.cookies
+                self.save_cookies()
+
             print('Authentification réussie.')
+            self.zones = self.user.get_all_zones()
             self.start_timer()
 
         except requests.exceptions.SSLError as ssl_error:
-            print(f"SSL Error: {ssl_error}")
+            print(f"Erreur SSL : {ssl_error}")
             with open("error_log.txt", "a") as file:
-                file.write(f"SSL Error while login: {str(ssl_error)}\n")
+                file.write(f"Erreur SSL lors de la connexion : {str(ssl_error)}\n")
             self.retry_login()
 
         except Exception as e:
-            print(e)
+            print(f"Erreur lors de la connexion : {e}")
             with open("error_log.txt", "a") as file:
-                file.write(f"Error while login: {str(e)}\n")
+                file.write(f"Erreur lors de la connexion : {str(e)}\n")
             self.retry_login()
 
     def retry_login(self):
+        self.user.logout()
         print('Réessayer l\'authentification...')
         time.sleep(5)
         self.login()
@@ -135,7 +174,6 @@ class Collector:
         latest_data = zone_info['latestData']
         ui_data = latest_data['uiData']
         fan_data = latest_data['fanData']
-
         return zone_info, ui_data, fan_data
 
     def get_data(self, zones):
@@ -147,11 +185,11 @@ class Collector:
             print("3. JOURS")
             print('-------------------------------------')
 
-            option = int(input())
-            every = int(input('Tous les (CHIFFRES) : '))
+            option = int(safe_input('Option: '))
+            every = int(safe_input('Tous les (CHIFFRES) : '))
 
             while not 1 <= option <= 3:
-                option = int(input('Réessayer:'))
+                option = int(safe_input('Réessayer: '))
 
             for zone in zones:
                 if option == 1:
@@ -166,7 +204,7 @@ class Collector:
             self.list_threads.append(schedule_thread)
 
             while self.running:
-                cmd = input("Entrez STOP pour arrêter le programme\n")
+                cmd = safe_input("Entrez STOP pour arrêter le programme\n")
                 if cmd.strip().lower() == 'stop':
                     self.running = False
                     break
@@ -184,14 +222,13 @@ class Collector:
 
     def collect_data(self, zone):
         try:
-
             zone_info, ui_data, fan_data = self.get_current_data(zone)
 
             utcmoment_naive = datetime.now(pytz.utc)
             utcmoment = utcmoment_naive.replace(tzinfo=pytz.utc)
 
-            timestamp = utcmoment.astimezone(pytz.timezone('America/Goose_Bay')).strftime("%Y-%m-%d %H:%M:%S")
-            date = utcmoment.astimezone(pytz.timezone('America/Goose_Bay')).strftime("%Y-%m-%d")
+            timestamp = utcmoment.astimezone(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d %H:%M:%S")
+            date = utcmoment.astimezone(pytz.timezone(TIMEZONE)).strftime("%Y-%m-%d")
 
             zone_name = zone_info['Name']
             device_id = zone.device_id
@@ -211,8 +248,8 @@ class Collector:
                 "fan_is_running": fan_data['fanIsRunning']
             }
 
-            self.write_in_db(zone_name, device_id, date, data)
-            print(f'Data collected for {device_id} - {zone_name} at {timestamp}')
+            self.write_in_db(zone_name, date, data)
+            print(f'Données collectées pour {device_id} - {zone_name} à {timestamp}')
 
         except Exception as e:
             with open("error_log.txt", "a") as file:
@@ -220,13 +257,13 @@ class Collector:
             self.user.logout()
             exit(1)
 
-    def write_in_db(self, zone_name, device_id, date, data):
+    def write_in_db(self, zone_name, date, data):
         try:
-            ref = db.reference(f'/{device_id}/{zone_name}/{date}-THERMOSTAT_DATA')
+            ref = db.reference(f'/{zone_name}/{date}-THERMOSTAT_DATA')
             ref.push(data)
         except Exception as e:
             with open("error_log.txt", "a") as file:
-                file.write(f"Erreur dans l'écriture de la base de données : {str(e)}\n")
+                file.write(f"Erreur lors de l'écriture dans la base de données : {str(e)}\n")
             self.user.logout()
             exit(1)
 
@@ -239,22 +276,16 @@ class Collector:
         for i, zone in enumerate(self.zones, start=1):
             print(f"{i}\tZone ID: {zone.device_id} | Zone Name: {zone.zone_info['Name']}\n")
 
-        choix = input('Affichez les infos des zones (séparer les numéros par une virgule) :')
-        choix_indices = [int(index.strip()) for index in choix.split(',')]
+        choix = safe_input('Affichez les infos des zones (séparer par une virgule). Ex : 1, 3: ')
+        zones_selected = [self.zones[int(idx.strip()) - 1] for idx in choix.split(',')]
 
-        self.get_data([self.zones[i - 1] for i in choix_indices])
+        self.get_data(zones_selected)
 
     def cleanup_threads(self):
-        for t in self.list_threads:
-            t.join()
-        #self.list_threads.clear()
+        self.running = False
+        for thread in self.list_threads:
+            thread.join()
 
 if __name__ == "__main__":
-    try:
-        c = Collector()
-        c.get_all_zones()
-    except Exception as e:
-        with open("error_log.txt", "a") as file:
-            file.write(f"Erreur dans le main : {str(e)}\n")
-        print(e)
-        exit(1)
+    collector = Collector()
+    collector.get_all_zones()
