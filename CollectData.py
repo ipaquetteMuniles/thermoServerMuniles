@@ -73,6 +73,7 @@ class Collector:
         self.timer = None
         self.running = True
         self.list_threads = []
+        self.file = None
 
         self.load_cookies()
         self.login()
@@ -110,14 +111,14 @@ class Collector:
 
         except requests.exceptions.SSLError as ssl_error:
             print(f"Erreur SSL : {ssl_error}")
-            with open("error_log.txt", "a") as file:
-                file.write(f"Erreur SSL lors de la connexion : {str(ssl_error)}\n")
+            with open("error_log.txt", "a") as self.file:
+                self.file.write(f"Erreur SSL lors de la connexion : {str(ssl_error)}\n")
             self.retry_login()
 
         except Exception as e:
             print(f"Erreur lors de la connexion : {e}")
-            with open("error_log.txt", "a") as file:
-                file.write(f"Erreur lors de la connexion : {str(e)}\n")
+            with open("error_log.txt", "a") as self.file:
+                self.file.write(f"Erreur lors de la connexion : {str(e)}\n")
             self.retry_login()
 
     def retry_login(self):
@@ -164,17 +165,24 @@ class Collector:
 
         except requests.RequestException as e:
             print(e)
-            with open("error_log.txt", "a") as file:
-                file.write(f"Error fetching data from Open-Meteo API: {str(e)}\n")
+            with open("error_log.txt", "a") as self.file:
+                self.file.write(f"Error fetching data from Open-Meteo API: {str(e)}\n")
             return None
+    def ensure_authenticated(self):
+        if not self.user.session or not self.user.session.cookies:
+            self.login()
 
     def get_current_data(self, zone):
+        self.ensure_authenticated()
+
         zone.refresh_zone_info()
         zone_info = zone.zone_info
         latest_data = zone_info['latestData']
         ui_data = latest_data['uiData']
         fan_data = latest_data['fanData']
         return zone_info, ui_data, fan_data
+    
+   
 
     def get_data(self, zones):
         try:
@@ -215,9 +223,10 @@ class Collector:
 
         except Exception as e:
             utcmoment_naive = datetime.now(pytz.utc)
-            with open("error_log.txt", "a") as file:
-                file.write(f"{utcmoment_naive} - Erreur dans get_data: {str(e)}\n")
+            with open("error_log.txt", "a") as self.file:
+                self.file.write(f"{utcmoment_naive} - Erreur dans get_data: {str(e)}\n")
             self.user.logout()
+            self.file.close()
             exit(1)
 
     def collect_data(self, zone):
@@ -253,8 +262,10 @@ class Collector:
 
         except Exception as e:
             with open("error_log.txt", "a") as file:
-                file.write(f"Erreur dans collect_data : {str(e)}\n")
+                self.file.write(f"Erreur dans collect_data : {str(e)}\n")
             self.user.logout()
+            self.file.close()
+
             exit(1)
 
     def write_in_db(self, zone_name, date, data):
@@ -265,6 +276,8 @@ class Collector:
             with open("error_log.txt", "a") as file:
                 file.write(f"Erreur lors de l'écriture dans la base de données : {str(e)}\n")
             self.user.logout()
+            self.file.close()
+
             exit(1)
 
     def get_all_zones(self):
