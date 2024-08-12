@@ -69,19 +69,22 @@ class Collector:
         self.email = None
         self.mdp = None
         self.user = None
-        self.session = requests.Session()
+        self.session = None
         self.timer = None
         self.running = True
         self.list_threads = []
         self.file = open("error_log.txt", "a")
 
-        self.load_cookies()
         self.login()
+        self.load_cookies()
 
     def save_cookies(self):
-        with open("session_cookies.pkl", "wb") as file:
-            cookies_dict = cookiejar_to_dict(self.session.cookies)
-            pickle.dump(cookies_dict, file)
+        try:
+            with open("session_cookies.pkl", "wb") as file:
+                cookies_dict = cookiejar_to_dict(self.session.cookies)
+                pickle.dump(cookies_dict, file)
+        except Exception as e:
+            self.file.write(f"Erreur lors de save_cookies : {str(e)}\n")
 
     def load_cookies(self):
         if os.path.exists("session_cookies.pkl") and os.path.getsize("session_cookies.pkl") > 0:
@@ -91,17 +94,23 @@ class Collector:
                     self.session.cookies = dict_to_cookiejar(cookies_dict)
             except EOFError:
                 print("Le fichier de cookies est vide ou corrompu. Procédure sans chargement des cookies.")
+            except Exception as e:
+                print('While loading cookies:',e)
+                self.file.write(f"Erreur lors de load_cookies : {str(e)}\n")
+
         else:
             print("Le fichier de cookies est vide. Procédure sans chargement des cookies.")
 
     def login(self):
         try:
+            self.session = requests.Session()
+
             if self.user is None:
                 self.email = safe_input('Votre courriel : ')
                 self.mdp = safe_input('Mot de passe : ')
                 self.user = PyHTCC(self.email, self.mdp)
 
-            if self.user.session.cookies:
+            if self.user.session.cookies or self.session.cookies:
                 self.session.cookies = self.user.session.cookies
                 self.save_cookies()
 
@@ -121,6 +130,8 @@ class Collector:
 
     def retry_login(self):
         self.user.logout()
+        self.user = None
+        
         print('Réessayer l\'authentification...')
         time.sleep(5)
         self.login()
@@ -178,7 +189,7 @@ class Collector:
         ui_data = latest_data['uiData']
         fan_data = latest_data['fanData']
         return zone_info, ui_data, fan_data
-    
+
     def get_data(self, zones):
         try:
             print('Veuillez choisir la récurrence des requêtes')
