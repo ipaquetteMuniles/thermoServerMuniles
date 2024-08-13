@@ -1,6 +1,6 @@
 # thermoServerMuniles
 
-## Installations pour rouler le serveur
+## Installations pour rouler le serveur ResideoServer
 ### 1. Installer python pour windows
 https://www.python.org/downloads/
 
