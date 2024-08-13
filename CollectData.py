@@ -4,9 +4,6 @@ Iohann Paquette
 2024-06-18
 """
 
-"""
-Bibliothèques
-"""
 import time
 from datetime import datetime
 from pyhtcc import PyHTCC
@@ -22,6 +19,7 @@ import requests
 import ssl
 import sys
 import pickle
+from threading import Lock
 
 """
 Constantes
@@ -37,7 +35,9 @@ default_app = firebase_admin.initialize_app(cred, {
 LONGITUDE = -61.750022
 LATITUDE = 47.445642
 TIMEZONE = 'America/Goose_Bay'
-RELOG_TIME = 7200  # en secondes - 2h
+RELOG_TIME = 14400  # en secondes - 4h
+MAX_RETRY_ATTEMPTS = 5
+RETRY_BACKOFF_TIME = 5  # en secondes
 
 def cookiejar_to_dict(cookiejar):
     cookies = {}
@@ -73,10 +73,17 @@ class Collector:
         self.timer = None
         self.running = True
         self.list_threads = []
-        self.file = open("error_log.txt", "a")
+        self.file_lock = Lock()
+        self.session_lock = Lock()
+        self.retries = 0
 
         self.login()
         self.load_cookies()
+
+    def log_error(self, message):
+        with self.file_lock:
+            with open("error_log.txt", "a") as file:
+                file.write(f"{time.asctime(time.localtime())} - {message}\n")
 
     def save_cookies(self):
         try:
@@ -84,7 +91,7 @@ class Collector:
                 cookies_dict = cookiejar_to_dict(self.session.cookies)
                 pickle.dump(cookies_dict, file)
         except Exception as e:
-            self.file.write(f"Erreur lors de save_cookies : {str(e)}\n")
+            self.log_error(f"Erreur lors de save_cookies : {str(e)}")
 
     def load_cookies(self):
         if os.path.exists("session_cookies.pkl") and os.path.getsize("session_cookies.pkl") > 0:
@@ -92,25 +99,28 @@ class Collector:
                 with open("session_cookies.pkl", "rb") as file:
                     cookies_dict = pickle.load(file)
                     self.session.cookies = dict_to_cookiejar(cookies_dict)
-            except EOFError:
+            except (EOFError, pickle.PickleError) as e:
                 print("Le fichier de cookies est vide ou corrompu. Procédure sans chargement des cookies.")
+                self.log_error(f"Erreur lors de load_cookies : {str(e)}")
             except Exception as e:
-                print('While loading cookies:',e)
-                self.file.write(f"Erreur lors de load_cookies : {str(e)}\n")
-
+                print('Erreur lors de load_cookies :', e)
+                self.log_error(f"Erreur lors de load_cookies : {str(e)}")
         else:
             print("Le fichier de cookies est vide. Procédure sans chargement des cookies.")
 
     def login(self):
         try:
+            print("Starting login process...")
             self.session = requests.Session()
 
             if self.user is None:
                 self.email = safe_input('Votre courriel : ')
                 self.mdp = safe_input('Mot de passe : ')
+                print(f"Email: {self.email}, Password: [hidden]")
                 self.user = PyHTCC(self.email, self.mdp)
 
-            if self.user.session.cookies or self.session.cookies:
+            if self.user.session.cookies is not None and self.session.cookies is not None:
+                print("Setting session cookies...")
                 self.session.cookies = self.user.session.cookies
                 self.save_cookies()
 
@@ -120,27 +130,34 @@ class Collector:
 
         except requests.exceptions.SSLError as ssl_error:
             print(f"Erreur SSL : {ssl_error}")
-            self.file.write(f"{time.asctime(time.localtime())} - Erreur SSL lors de la connexion : {str(ssl_error)}\n")
+            self.log_error(f"{time.asctime(time.localtime())} - Erreur SSL lors de la connexion : {str(ssl_error)}\n")
             self.retry_login()
 
         except Exception as e:
             print(f"Erreur lors de la connexion : {e}")
-            self.file.write(f"Erreur lors de la connexion : {str(e)}\n")
+            self.log_error(f"Erreur lors de la connexion : {str(e)}\n")
             self.retry_login()
 
     def retry_login(self):
-        self.user.logout()
-        self.user = None
-        
-        print('Réessayer l\'authentification...')
-        time.sleep(5)
-        self.login()
+        with self.session_lock:
+            self.user.logout()
+            self.user = None
+
+            if self.retries < MAX_RETRY_ATTEMPTS:
+                self.retries += 1
+                print(f"Réessayer l'authentification dans {RETRY_BACKOFF_TIME * self.retries} secondes...")
+                time.sleep(RETRY_BACKOFF_TIME * self.retries)
+                self.login()
+            else:
+                print("Nombre maximal de tentatives atteint. Abandon.")
+                self.running = False
 
     def start_timer(self):
-        if self.timer:
-            self.timer.cancel()
-        self.timer = threading.Timer(RELOG_TIME - 300, self.login)
-        self.timer.start()
+        with self.session_lock:
+            if self.timer:
+                self.timer.cancel()
+            self.timer = threading.Timer(RELOG_TIME - 300, self.login)
+            self.timer.start()
 
     def run_schedule(self):
         try:
@@ -148,8 +165,8 @@ class Collector:
                 schedule.run_pending()
                 time.sleep(1)
         except Exception as e:
-            print(e)
-            self.user.logout()
+            print(f"Erreur dans run_schedule : {e}")
+            self.log_error(f"Erreur dans run_schedule : {str(e)}")
             self.cleanup_threads()
 
     def get_temperature(self):
@@ -164,25 +181,24 @@ class Collector:
         try:
             response = requests.get(url, params=params)
             response.raise_for_status()
-            response = response.json()
+            current = response.json()['current']
 
-            current = response['current']
             current_temperature_2m = current['temperature_2m']
             current_humidity_2m = current['relative_humidity_2m']
 
             return current_temperature_2m, current_humidity_2m
 
         except requests.RequestException as e:
-            print(e)
-            self.file.write(f"{time.asctime(time.localtime())} - Error fetching data from Open-Meteo API: {str(e)}\n")
-            return None
+            print(f"Erreur lors de la requête API : {e}")
+            self.log_error(f"Erreur lors de la requête API Open-Meteo : {str(e)}")
+            return None, None
+
     def ensure_authenticated(self):
         if not self.user.session or not self.user.session.cookies:
             self.login()
 
     def get_current_data(self, zone):
         self.ensure_authenticated()
-
         zone.refresh_zone_info()
         zone_info = zone.zone_info
         latest_data = zone_info['latestData']
@@ -226,12 +242,9 @@ class Collector:
             print('Arrêt en cours...')
             self.cleanup_threads()
             self.user.logout()
-            self.file.close()
 
         except Exception as e:
-            utcmoment_naive = datetime.now(pytz.utc)
-            with open("error_log.txt", "a") as self.file:
-                self.file.write(f"{utcmoment_naive} - Erreur dans get_data: {str(e)}\n")
+            self.log_error(f"Erreur dans get_data : {str(e)}")
 
     def collect_data(self, zone):
         try:
@@ -262,37 +275,64 @@ class Collector:
             }
 
             self.write_in_db(zone_name, date, data)
-            print(f'Données collectées pour {device_id} - {zone_name} à {timestamp}')
+            print(f'Données collectées pour {device_id} - {zone_name}')
 
         except Exception as e:
-            self.file.write(f"{time.asctime(time.localtime())} - Erreur dans collect_data : {str(e)}\n")
+            self.log_error(f"Erreur dans collect_data : {str(e)}")
 
     def write_in_db(self, zone_name, date, data):
         try:
             ref = db.reference(f'/{zone_name}/{date}-THERMOSTAT_DATA')
             ref.push(data)
         except Exception as e:
-            self.file.write(f"{time.asctime(time.localtime())} - Erreur lors de l'écriture dans la base de données : {str(e)}\n")
-
-    def get_all_zones(self):
-        os.system('cls' if os.name == 'nt' else 'clear')
-
-        print('Différentes localisations:')
-        print('-------------------------------------')
-
-        for i, zone in enumerate(self.zones, start=1):
-            print(f"{i}\tZone ID: {zone.device_id} | Zone Name: {zone.zone_info['Name']}\n")
-
-        choix = safe_input('Affichez les infos des zones (séparer par une virgule). Ex : 1, 3: ')
-        zones_selected = [self.zones[int(idx.strip()) - 1] for idx in choix.split(',')]
-
-        self.get_data(zones_selected)
+            self.log_error(f"{time.asctime(time.localtime())} - Erreur lors de l'écriture dans la base de données : {str(e)}\n")
 
     def cleanup_threads(self):
         self.running = False
         for thread in self.list_threads:
-            thread.join()
+            if thread.is_alive():
+                thread.join()
+
+    def shutdown(self):
+        self.cleanup_threads()
+        self.user.logout()
+        self.save_cookies()
+        self.log_error('Arret du programme')
+        print("Arrêt complet du programme.")
+
+    def get_all_zones(self):
+        """
+        Display available zones and prompt the user to select zones for data collection.
+        """
+        try:
+            os.system('cls' if os.name == 'nt' else 'clear')
+
+            print('Différentes localisations:')
+            print('-------------------------------------')
+
+            for i, zone in enumerate(self.zones, start=1):
+                print(f"{i}\tZone ID: {zone.device_id} | Zone Name: {zone.zone_info['Name']}\n")
+
+            choix = safe_input('Affichez les infos des zones (séparer par une virgule). Ex : 1, 3: ')
+            zones_selected = [self.zones[int(idx.strip()) - 1] for idx in choix.split(',')]
+
+            self.get_data(zones_selected)
+
+        except Exception as e:
+            self.log_error(f"Erreur dans get_all_zones: {str(e)}")
+            self.shutdown()
 
 if __name__ == "__main__":
+    """
+    Main function to initialize and run the data collection process.
+    """
     collector = Collector()
-    collector.get_all_zones()
+
+    try:
+        collector.get_all_zones()
+    except KeyboardInterrupt:
+        print("\nInterruption du programme par l'utilisateur.")
+        collector.shutdown()
+    except Exception as e:
+        collector.log_error(f"Erreur non gérée : {str(e)}")
+        collector.shutdown()
