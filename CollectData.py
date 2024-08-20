@@ -66,8 +66,10 @@ class Collector:
     Constructeur de notre classe
     """
     def __init__(self):
-        self.email = None
-        self.mdp = None
+
+        secrets = self.get_credentials()
+        self.email = secrets.get('email')
+        self.mdp = secrets.get('password')
         self.user = None
         self.session = None
         self.timer = None
@@ -77,8 +79,14 @@ class Collector:
         self.session_lock = Lock()
         self.retries = 0
 
-        self.login()
-        self.load_cookies()
+    def get_credentials(self):
+        secrets = {}
+
+        with open('credentials.txt','r') as file:
+            for line in file:
+                key, value = line.strip().split('=', 1)
+                secrets[key] = value
+        return secrets
 
     def log_error(self, message):
         with self.file_lock:
@@ -112,11 +120,16 @@ class Collector:
         try:
             print("Starting login process...")
             self.session = requests.Session()
+  
+            print(f"Email: {self.email}")
+            string_password = ''
+            for caracter in self.mdp: 
+                string_password += '*'
+
+            print(f"Password:{string_password}")
 
             if self.user is None:
-                self.email = safe_input('Votre courriel : ')
-                self.mdp = safe_input('Mot de passe : ')
-                print(f"Email: {self.email}, Password: [hidden]")
+                print("Creation de l'utilisateur...")
                 self.user = PyHTCC(self.email, self.mdp)
 
             if self.user.session.cookies is not None and self.session.cookies is not None:
@@ -125,8 +138,10 @@ class Collector:
                 self.save_cookies()
 
             print('Authentification réussie.')
-            self.zones = self.user.get_all_zones()
+            self.load_cookies()
+
             self.start_timer()
+            collector.get_all_zones()
 
         except requests.exceptions.SSLError as ssl_error:
             print(f"Erreur SSL : {ssl_error}")
@@ -198,37 +213,21 @@ class Collector:
             self.login()
 
     def get_current_data(self, zone):
-        self.ensure_authenticated()
-        zone.refresh_zone_info()
-        zone_info = zone.zone_info
-        latest_data = zone_info['latestData']
-        ui_data = latest_data['uiData']
-        fan_data = latest_data['fanData']
-        return zone_info, ui_data, fan_data
-
-    def get_data(self, zones):
         try:
-            print('Veuillez choisir la récurrence des requêtes')
-            print('-------------------------------------')
-            print("1. MINUTES")
-            print("2. HEURES")
-            print("3. JOURS")
-            print('-------------------------------------')
-
-            option = int(safe_input('Option: '))
-            every = int(safe_input('Tous les (CHIFFRES) : '))
-
-            while not 1 <= option <= 3:
-                option = int(safe_input('Réessayer: '))
-
-            for zone in zones:
-                if option == 1:
-                    schedule.every(every).minutes.do(self.collect_data, zone)
-                elif option == 2:
-                    schedule.every(every).hours.do(self.collect_data, zone)
-                elif option == 3:
-                    schedule.every(every).days.do(self.collect_data, zone)
-
+            self.ensure_authenticated()
+            zone.refresh_zone_info()
+            zone_info = zone.zone_info
+            latest_data = zone_info['latestData']
+            ui_data = latest_data['uiData']
+            fan_data = latest_data['fanData']
+            return zone_info, ui_data, fan_data
+        except Exception as e:
+            self.log_error(f"Erreur dans get_current_data : {str(e)}")
+    def get_data(self, zone):
+        try:
+            #tous les cinq minutes
+            schedule.every(5).minutes.do(self.collect_data, zone)
+             
             schedule_thread = threading.Thread(target=self.run_schedule)
             schedule_thread.start()
             self.list_threads.append(schedule_thread)
@@ -239,9 +238,7 @@ class Collector:
                     self.running = False
                     break
 
-            print('Arrêt en cours...')
-            self.cleanup_threads()
-            self.user.logout()
+            self.shutdown()
 
         except Exception as e:
             self.log_error(f"Erreur dans get_data : {str(e)}")
@@ -279,6 +276,7 @@ class Collector:
 
         except Exception as e:
             self.log_error(f"Erreur dans collect_data : {str(e)}")
+            self.retry_login()
 
     def write_in_db(self, zone_name, date, data):
         try:
@@ -299,37 +297,36 @@ class Collector:
         self.save_cookies()
         self.log_error('Arret du programme')
         print("Arrêt complet du programme.")
+        exit(1)
 
     def get_all_zones(self):
         """
         Display available zones and prompt the user to select zones for data collection.
         """
-        try:
-            os.system('cls' if os.name == 'nt' else 'clear')
+        self.zones = self.user.get_all_zones()
 
+        try:
             print('Différentes localisations:')
             print('-------------------------------------')
 
-            for i, zone in enumerate(self.zones, start=1):
-                print(f"{i}\tZone ID: {zone.device_id} | Zone Name: {zone.zone_info['Name']}\n")
-
-            choix = safe_input('Affichez les infos des zones (séparer par une virgule). Ex : 1, 3: ')
-            zones_selected = [self.zones[int(idx.strip()) - 1] for idx in choix.split(',')]
-
-            self.get_data(zones_selected)
+            for zone in self.zones:
+                print(f"\tZone ID: {zone.device_id} | Zone Name: {zone.zone_info['Name']}\n")
+                print(zone)
+                self.get_data(zone)
 
         except Exception as e:
             self.log_error(f"Erreur dans get_all_zones: {str(e)}")
-            self.shutdown()
+            self.retry_login()
 
 if __name__ == "__main__":
     """
     Main function to initialize and run the data collection process.
     """
+
     collector = Collector()
 
     try:
-        collector.get_all_zones()
+        collector.login()
     except KeyboardInterrupt:
         print("\nInterruption du programme par l'utilisateur.")
         collector.shutdown()
