@@ -1,9 +1,3 @@
-"""
-Municipalité des îles-de-la-Madeleine
-Iohann Paquette
-2024-06-18
-"""
-
 import time
 from datetime import datetime
 from pyhtcc import PyHTCC
@@ -38,6 +32,7 @@ TIMEZONE = 'America/Goose_Bay'
 RELOG_TIME = 14400  # en secondes - 4h
 MAX_RETRY_ATTEMPTS = 5
 RETRY_BACKOFF_TIME = 5  # en secondes
+STATUS_FILE = '/home/Iohann/Collector.status'
 
 def cookiejar_to_dict(cookiejar):
     cookies = {}
@@ -66,27 +61,23 @@ class Collector:
     Constructeur de notre classe
     """
     def __init__(self):
-
-        secrets = self.get_credentials()
-        self.email = secrets.get('email')
-        self.mdp = secrets.get('password')
+        self.file_lock = Lock()
+        self.session_lock = Lock()
+        self.running = True
+        self.list_threads = []
+        self.retries = 0
+        self.email, self.mdp = self.get_credentials()
         self.user = None
         self.session = None
         self.timer = None
-        self.running = True
-        self.list_threads = []
-        self.file_lock = Lock()
-        self.session_lock = Lock()
-        self.retries = 0
 
     def get_credentials(self):
         secrets = {}
-
         with open('credentials.txt','r') as file:
             for line in file:
                 key, value = line.strip().split('=', 1)
                 secrets[key] = value
-        return secrets
+        return secrets.get('email'), secrets.get('password')
 
     def log_error(self, message):
         with self.file_lock:
@@ -120,12 +111,10 @@ class Collector:
         try:
             print("Starting login process...")
             self.session = requests.Session()
-  
-            print(f"Email: {self.email}")
-            string_password = ''
-            for caracter in self.mdp: 
-                string_password += '*'
 
+            print(f"Email: {self.email}")
+
+            string_password = '*' * len(self.mdp)
             print(f"Password:{string_password}")
 
             if self.user is None:
@@ -141,7 +130,7 @@ class Collector:
             self.load_cookies()
 
             self.start_timer()
-            collector.get_all_zones()
+            self.get_all_zones()
 
         except requests.exceptions.SSLError as ssl_error:
             print(f"Erreur SSL : {ssl_error}")
@@ -220,25 +209,25 @@ class Collector:
             latest_data = zone_info['latestData']
             ui_data = latest_data['uiData']
             fan_data = latest_data['fanData']
+
             return zone_info, ui_data, fan_data
+        except requests.exceptions.SSLError as ssl_error:
+            print(f"Erreur SSL lors de get_current_data: {ssl_error}")
+            self.log_error(f"Erreur SSL lors de get_current_data : {str(ssl_error)}")
+            return None, None, None  # Return None to indicate an error
         except Exception as e:
             self.log_error(f"Erreur dans get_current_data : {str(e)}")
+            return None, None, None  # Return None to indicate an error
+
+
     def get_data(self, zone):
         try:
-            #tous les cinq minutes
+            # tous les cinq minutes
             schedule.every(5).minutes.do(self.collect_data, zone)
-             
+
             schedule_thread = threading.Thread(target=self.run_schedule)
             schedule_thread.start()
             self.list_threads.append(schedule_thread)
-
-            while self.running:
-                cmd = safe_input("Entrez STOP pour arrêter le programme\n")
-                if cmd.strip().lower() == 'stop':
-                    self.running = False
-                    break
-
-            self.shutdown()
 
         except Exception as e:
             self.log_error(f"Erreur dans get_data : {str(e)}")
@@ -246,6 +235,11 @@ class Collector:
     def collect_data(self, zone):
         try:
             zone_info, ui_data, fan_data = self.get_current_data(zone)
+
+            # Check if data fetching was unsuccessful
+            if zone_info is None or ui_data is None or fan_data is None:
+                print(f"Data collection failed for {zone.device_id} - {zone.zone_info['Name']}")
+                return
 
             utcmoment_naive = datetime.now(pytz.utc)
             utcmoment = utcmoment_naive.replace(tzinfo=pytz.utc)
@@ -272,7 +266,7 @@ class Collector:
             }
 
             self.write_in_db(zone_name, date, data)
-            print(f'Données collectées pour {device_id} - {zone_name}')
+            print(f'\nDonnées collectées pour {device_id} - {zone_name}')
 
         except Exception as e:
             self.log_error(f"Erreur dans collect_data : {str(e)}")
@@ -297,7 +291,13 @@ class Collector:
         self.save_cookies()
         self.log_error('Arret du programme')
         print("Arrêt complet du programme.")
+        try:
+            if os.path.exists(STATUS_FILE):
+                os.remove(STATUS_FILE)
+        except Exception as e:
+            self.log_error(f"Erreur lors de la suppression du fichier de statut : {str(e)}")
         exit(1)
+
 
     def get_all_zones(self):
         """
@@ -311,7 +311,6 @@ class Collector:
 
             for zone in self.zones:
                 print(f"\tZone ID: {zone.device_id} | Zone Name: {zone.zone_info['Name']}\n")
-                print(zone)
                 self.get_data(zone)
 
         except Exception as e:
@@ -319,13 +318,11 @@ class Collector:
             self.retry_login()
 
 if __name__ == "__main__":
-    """
-    Main function to initialize and run the data collection process.
-    """
-
     collector = Collector()
 
     try:
+        with open(STATUS_FILE, 'w') as f:
+            f.write(f"{os.getpid()}\n")
         collector.login()
     except KeyboardInterrupt:
         print("\nInterruption du programme par l'utilisateur.")
@@ -333,3 +330,10 @@ if __name__ == "__main__":
     except Exception as e:
         collector.log_error(f"Erreur non gérée : {str(e)}")
         collector.shutdown()
+    finally:
+        # Ensure STATUS_FILE is removed on shutdown
+        if os.path.exists(STATUS_FILE):
+            try:
+                os.remove(STATUS_FILE)
+            except Exception as e:
+                collector.log_error(f"Erreur lors de la suppression du fichier de statut : {str(e)}")
